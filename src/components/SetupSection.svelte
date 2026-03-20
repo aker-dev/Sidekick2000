@@ -135,10 +135,10 @@
 
   <!-- Output dir (read-only display, configurable via Settings) -->
   <div>
-    <label class="block text-sm font-medium mb-1" style="color: var(--text-muted)">
+    <p class="block text-sm font-medium mb-1" style="color: var(--text-muted)">
       Output Directory
       <span class="text-xs opacity-60">(configure in Settings)</span>
-    </label>
+    </p>
     <p
       class="w-full rounded-md px-3 py-2 text-sm border truncate"
       style="background: var(--bg); border-color: var(--border); color: var(--text-muted)"
