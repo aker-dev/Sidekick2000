@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     strategy:
@@ -11,22 +14,26 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
             target: aarch64-apple-darwin
-          - platform: macos-13
-            args: --target x86_64-apple-darwin
+            artifact: macos-arm64
+          - platform: macos-latest
             target: x86_64-apple-darwin
+            artifact: macos-x86_64
           - platform: ubuntu-22.04
-            args: ""
             target: ""
+            artifact: linux
           - platform: windows-latest
-            args: ""
             target: ""
+            artifact: windows
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install macOS dependencies
+        if: contains(matrix.platform, 'macos')
+        run: brew install opus
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -42,7 +49,8 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libasound2-dev
+            libasound2-dev \
+            libopus-dev
 
       - uses: actions/setup-node@v4
         with:
@@ -56,6 +64,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -64,8 +73,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing — set these secrets in the repo settings to sign & notarize.
-          # Leave them unset to produce unsigned builds (fine for local distribution).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -73,24 +80,24 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          args: ${{ matrix.args }}
+          args: ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
 
-      - name: Upload macOS bundle (arm64)
-        if: matrix.platform == 'macos-latest'
+      - name: Upload macOS arm64 bundle
+        if: matrix.artifact == 'macos-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
-      - name: Upload macOS bundle (x86_64)
-        if: matrix.platform == 'macos-13'
+      - name: Upload macOS x86_64 bundle
+        if: matrix.artifact == 'macos-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: macos-x86_64
           path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload Linux bundle
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.artifact == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -99,7 +106,7 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
 
       - name: Upload Windows bundle
-        if: matrix.platform == 'windows-latest'
+        if: matrix.artifact == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: windows

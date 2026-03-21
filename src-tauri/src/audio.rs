@@ -268,16 +268,24 @@ fn resample(samples: &[f32], from_sr: u32, to_sr: u32) -> Vec<f32> {
 /// Encode PCM samples as OGG/Opus using pure Rust (no ffmpeg required).
 /// Opus at 32 kbps mono gives ~15× compression over 16-bit PCM WAV.
 fn convert_to_ogg(samples: &[f32], sample_rate: u32, ogg_path: &PathBuf) -> Result<()> {
+    use audiopus::coder::Encoder;
+    use audiopus::{Application, Channels, SampleRate};
     use ogg::writing::{PacketWriteEndInfo, PacketWriter};
-    use opus::{Application, Channels, Encoder};
-    use std::rc::Rc;
 
-    log::info!("Encoding OGG/Opus (pure Rust, no ffmpeg)");
+    log::info!("Encoding OGG/Opus (libopus statically linked, no ffmpeg)");
 
-    let mut encoder = Encoder::new(sample_rate, Channels::Mono, Application::Voip)
+    let sr = match sample_rate {
+        8_000  => SampleRate::Hz8000,
+        12_000 => SampleRate::Hz12000,
+        16_000 => SampleRate::Hz16000,
+        24_000 => SampleRate::Hz24000,
+        _      => SampleRate::Hz48000,
+    };
+
+    let mut encoder = Encoder::new(sr, Channels::Mono, Application::Voip)
         .context("Failed to create Opus encoder")?;
     encoder
-        .set_bitrate(opus::Bitrate::Bits(32_000))
+        .set_bitrate(audiopus::Bitrate::BitsPerSecond(32_000))
         .context("Failed to set Opus bitrate")?;
 
     // Pre-skip: standard SILK lookahead expressed in 48 kHz samples.
@@ -297,7 +305,7 @@ fn convert_to_ogg(samples: &[f32], sample_rate: u32, ogg_path: &PathBuf) -> Resu
     head.extend_from_slice(&sample_rate.to_le_bytes());   // original input sample rate
     head.extend_from_slice(&0u16.to_le_bytes());          // output gain
     head.push(0);                                         // channel mapping family: mono
-    pw.write_packet(Rc::from(head.as_slice()), serial, PacketWriteEndInfo::EndPage, 0)
+    pw.write_packet(head, serial, PacketWriteEndInfo::EndPage, 0)
         .context("Failed to write OpusHead")?;
 
     // OpusTags comment header (RFC 7845 §5.2)
@@ -307,7 +315,7 @@ fn convert_to_ogg(samples: &[f32], sample_rate: u32, ogg_path: &PathBuf) -> Resu
     tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
     tags.extend_from_slice(vendor);
     tags.extend_from_slice(&0u32.to_le_bytes()); // 0 user comments
-    pw.write_packet(Rc::from(tags.as_slice()), serial, PacketWriteEndInfo::EndPage, 0)
+    pw.write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)
         .context("Failed to write OpusTags")?;
 
     // Audio packets: 20 ms frames.
@@ -345,7 +353,7 @@ fn convert_to_ogg(samples: &[f32], sample_rate: u32, ogg_path: &PathBuf) -> Resu
             PacketWriteEndInfo::NormalPacket
         };
 
-        pw.write_packet(Rc::from(&out_buf[..n]), serial, end_info, granule)
+        pw.write_packet(out_buf[..n].to_vec(), serial, end_info, granule)
             .context("Failed to write Opus packet")?;
     }
 
