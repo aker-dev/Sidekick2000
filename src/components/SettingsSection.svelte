@@ -240,6 +240,27 @@
             {/each}
           </Select>
         </div>
+
+        <div>
+          <p class="text-sm font-medium mb-2" style="color: var(--text-muted)">Pipeline Steps</p>
+          <div class="space-y-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" bind:checked={settingsState.enable_summary} />
+              <span class="text-sm">Summary</span>
+              <span class="text-xs opacity-50">— generate meeting notes with AI</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" bind:checked={settingsState.enable_git_commit} />
+              <span class="text-sm">Git commit</span>
+              <span class="text-xs opacity-50">— commit notes to working folder</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" bind:checked={settingsState.enable_github_issues} />
+              <span class="text-sm">Post issues</span>
+              <span class="text-xs opacity-50">— create GitHub issues from action items</span>
+            </label>
+          </div>
+        </div>
       </div>
     {/if}
 

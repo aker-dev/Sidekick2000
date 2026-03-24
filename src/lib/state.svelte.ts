@@ -30,6 +30,9 @@ class AppState {
   // Working folder from settings (for git commit)
   workingFolder: string = $state("");
 
+  // Meeting name
+  meetingName: string = $state("");
+
   // Recording
   audioLevel: number = $state(0);
   elapsedSecs: number = $state(0);
@@ -105,6 +108,7 @@ class AppState {
 
   reset() {
     this.phase = "setup";
+    this.meetingName = "";
     this.audioLevel = 0;
     this.elapsedSecs = 0;
     this.selectedDevice = "";
@@ -135,6 +139,10 @@ class SettingsState {
   default_speakers: { name: string; organization: string }[] = $state([]);
   contexts: Context[] = $state([]);
 
+  enable_summary: boolean = $state(true);
+  enable_git_commit: boolean = $state(true);
+  enable_github_issues: boolean = $state(true);
+
   loaded: boolean = $state(false);
   saving: boolean = $state(false);
   saveError: string = $state("");
@@ -154,6 +162,9 @@ class SettingsState {
       this.default_language = s.default_language || "fr";
       this.default_speakers = s.default_speakers ?? [];
       this.contexts = s.contexts ?? [];
+      this.enable_summary = s.enable_summary ?? true;
+      this.enable_git_commit = s.enable_git_commit ?? true;
+      this.enable_github_issues = s.enable_github_issues ?? true;
       this.loaded = true;
     } catch (e) {
       console.error("Failed to load settings:", e);
@@ -174,6 +185,9 @@ class SettingsState {
       default_speakers: this.default_speakers,
       contexts: this.contexts,
       default_input_device: this.default_input_device,
+      enable_summary: this.enable_summary,
+      enable_git_commit: this.enable_git_commit,
+      enable_github_issues: this.enable_github_issues,
     };
   }
 

@@ -22,6 +22,7 @@
   let pollingId: ReturnType<typeof setInterval> | null = null;
   let stopping = $state(false);
   let isDragOver = $state(false);
+  let preparingFile = $state("");
 
   onMount(async () => {
     try {
@@ -72,13 +73,16 @@
   });
 
   async function handleFileDrop(path: string) {
+    preparingFile = path.split("/").pop() ?? path;
     try {
       const [oggPath, wavPath] = await prepareDroppedAudio(path);
       appState.oggPath = oggPath;
       appState.wavPath = wavPath;
+      preparingFile = "";
       appState.phase = "processing";
       await startPipeline();
     } catch (e: any) {
+      preparingFile = "";
       appState.errorMessage = e.toString();
       appState.phase = "error";
     }
@@ -151,6 +155,7 @@
       const config: PipelineConfig = {
         context: appState.contextLabel,
         context_content: appState.contextContent,
+        meeting_name: appState.meetingName,
         speakers: appState.enabledSpeakers.map((s) => ({
           name: s.name,
           organization: s.organization,
@@ -191,6 +196,22 @@
   </div>
 
   <div class="flex flex-col items-center gap-4">
+    <!-- Meeting name -->
+    {#if appState.phase === "setup"}
+      <div class="w-full">
+        <label class="block text-xs mb-1" style="color: var(--text-muted)">
+          Meeting name
+        </label>
+        <input
+          type="text"
+          class="w-full rounded px-2 py-1 text-sm border"
+          style="background: var(--surface-alt, var(--surface)); border-color: var(--border); color: var(--text);"
+          placeholder="e.g. Sprint Review"
+          bind:value={appState.meetingName}
+        />
+      </div>
+    {/if}
+
     <!-- Device selector -->
     {#if appState.phase === "setup" && appState.inputDevices.length > 0}
       <div class="w-full">
@@ -240,6 +261,11 @@
 
     {#if stopping}
       <p class="text-sm" style="color: var(--text-muted)">Saving audio…</p>
+    {:else if preparingFile}
+      <p class="text-xs font-medium" style="color: var(--accent)">
+        <svg style="display:inline;vertical-align:-2px" class="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round" /></svg>
+        Preparing {preparingFile}…
+      </p>
     {:else if appState.phase === "setup" || appState.phase === "recording"}
       <AudioMeter level={appState.audioLevel} />
       {#if appState.phase === "setup"}

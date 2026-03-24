@@ -56,7 +56,7 @@ fn build_system_prompt(
 
     // Add speaker info
     if !speakers.is_empty() {
-        prompt.push_str("\n\nThe following people are expected participants:\n");
+        prompt.push_str("\n\nThe following named participants are expected in this meeting:\n");
         for (name, org) in speakers {
             if org.is_empty() {
                 prompt.push_str(&format!("- {}\n", name));
@@ -65,7 +65,12 @@ fn build_system_prompt(
             }
         }
         prompt.push_str(
-            "\nPlease try to identify speakers based on context clues in the transcript.",
+            "\nThe transcript uses diarization labels (SPEAKER_00, SPEAKER_01, …). \
+            Before writing the notes:\n\
+            1. Infer which label corresponds to which named participant based on the content and context clues.\n\
+            2. Replace every SPEAKER_XX label with the actual participant name throughout the notes.\n\
+            3. If a label cannot be confidently matched to a name, use \"Unknown Speaker\".\n\
+            Never leave SPEAKER_XX labels in the output.",
         );
     }
 

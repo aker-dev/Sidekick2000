@@ -8,13 +8,13 @@ Built with [Tauri](https://tauri.app) + Svelte 5 on the frontend, Rust on the ba
 
 ## What it does
 
-1. **Records** system and microphone audio simultaneously
+1. **Records** system and microphone audio simultaneously (with live audio level monitoring before you hit record)
 2. **Transcribes** using [Groq Whisper](https://groq.com) (fast, multilingual)
 3. **Diarizes** — identifies which speaker said what using local speaker separation
-4. **Summarizes** with Claude Sonnet, using a context you define (meeting type, participants, domain vocabulary)
+4. **Summarizes** with Claude Sonnet (Anthropic) or any [Together.ai](https://www.together.ai) chat model, using a context you define (meeting type, participants, domain vocabulary)
 5. **Exports** structured Markdown notes (`YYYY-MM-DD_HHmm_Context.md`) to a configurable folder
-6. **Commits** the notes to a git repository automatically
-7. **Creates GitHub issues** for every action item extracted from the notes
+6. **Commits** the notes to a git repository automatically _(optional)_
+7. **Creates GitHub issues** for every action item extracted from the notes _(optional)_
 
 ---
 
@@ -50,9 +50,11 @@ Action items are automatically created as GitHub issues with the `meeting-action
 
 - macOS (Apple Silicon or Intel)
 - [Groq API key](https://console.groq.com) — for Whisper transcription
-- [Anthropic API key](https://console.anthropic.com) — for Claude summarization
-- [`gh` CLI](https://cli.github.com) installed and authenticated — for GitHub issues
-- `git` — for committing notes
+- **One of** (for summarization):
+  - [Anthropic API key](https://console.anthropic.com) — to use Claude Sonnet
+  - [Together.ai API key](https://www.together.ai) — to use open-source models (Llama, etc.)
+- [`gh` CLI](https://cli.github.com) installed and authenticated — for GitHub issues _(optional)_
+- `git` — for committing notes _(optional)_
 
 ### Install dependencies
 

@@ -29,6 +29,7 @@ pub struct PipelineConfig {
     pub output_dir: String,
     /// Git repo root folder for committing notes (empty = no commit)
     pub working_folder: String,
+    pub meeting_name: String,
     pub ogg_path: String,
     pub wav_path: String,
 }
@@ -85,6 +86,9 @@ pub async fn run(
     together_key: String,
     summarization_provider: String,
     together_model: String,
+    enable_summary: bool,
+    enable_git_commit: bool,
+    enable_github_issues: bool,
     app: AppHandle,
 ) -> Result<PipelineResult> {
     let ogg_path = PathBuf::from(&config.ogg_path);
@@ -130,34 +134,38 @@ pub async fn run(
     // Step 4: Generate transcript markdown
     let transcript_md = export::export_transcript_markdown(&merged);
 
-    // Step 5: Summarize with Claude
-    emit_progress(&app, "summarizing", 0.60);
+    // Step 5: Summarize
+    let notes = if enable_summary {
+        emit_progress(&app, "summarizing", 0.60);
 
-    let speaker_pairs: Vec<(String, String)> = config
-        .speakers
-        .iter()
-        .map(|s| (s.name.clone(), s.organization.clone()))
-        .collect();
+        let speaker_pairs: Vec<(String, String)> = config
+            .speakers
+            .iter()
+            .map(|s| (s.name.clone(), s.organization.clone()))
+            .collect();
 
-    let notes = if summarization_provider == "together_ai" {
-        summarize::summarize_with_together(
-            &transcript_md,
-            &config.context_content,
-            &speaker_pairs,
-            &config.language_name,
-            &together_key,
-            &together_model,
-        )
-        .await?
+        if summarization_provider == "together_ai" {
+            summarize::summarize_with_together(
+                &transcript_md,
+                &config.context_content,
+                &speaker_pairs,
+                &config.language_name,
+                &together_key,
+                &together_model,
+            )
+            .await?
+        } else {
+            summarize::summarize_with_claude(
+                &transcript_md,
+                &config.context_content,
+                &speaker_pairs,
+                &config.language_name,
+                &anthropic_key,
+            )
+            .await?
+        }
     } else {
-        summarize::summarize_with_claude(
-            &transcript_md,
-            &config.context_content,
-            &speaker_pairs,
-            &config.language_name,
-            &anthropic_key,
-        )
-        .await?
+        transcript_md.clone()
     };
 
     // Step 6: Export
@@ -166,15 +174,17 @@ pub async fn run(
     let output_dir = PathBuf::from(&config.output_dir);
     std::fs::create_dir_all(&output_dir)?;
 
-    // File naming: YYYY-MM-DD_HHmm_Context.md
+    // File naming: YYYY-MM-DD_HHmm_Context_MeetingName.md
     let now = chrono::Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let time = now.format("%H%M").to_string();
     let context_sanitized = export::sanitize_filename(&config.context);
-    let base_name = if context_sanitized.is_empty() {
-        format!("{}_{}_{}", date, time, "meeting")
-    } else {
-        format!("{}_{}_{}",  date, time, context_sanitized)
+    let meeting_name_sanitized = export::sanitize_filename(&config.meeting_name);
+    let base_name = match (context_sanitized.is_empty(), meeting_name_sanitized.is_empty()) {
+        (true, true) => format!("{}_{}_meeting", date, time),
+        (false, true) => format!("{}_{}_{}", date, time, context_sanitized),
+        (true, false) => format!("{}_{}_{}", date, time, meeting_name_sanitized),
+        (false, false) => format!("{}_{}_{}_{}", date, time, context_sanitized, meeting_name_sanitized),
     };
 
     let filename = format!("{}.md", base_name);
@@ -188,8 +198,8 @@ pub async fn run(
 
     std::fs::write(&transcript_path, &transcript_md)?;
 
-    // Step 7: Git commit (if working_folder is set and is a git repo)
-    if !config.working_folder.is_empty() {
+    // Step 7: Git commit (if enabled and working_folder is set)
+    if enable_git_commit && !config.working_folder.is_empty() {
         emit_progress(&app, "committing", 0.93);
         let working_folder = &config.working_folder;
 
@@ -203,11 +213,14 @@ pub async fn run(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| transcript_path.to_string_lossy().to_string());
 
-        let commit_msg = format!(
-            "meeting: {} {}",
-            if context_sanitized.is_empty() { "general" } else { &context_sanitized },
-            date
-        );
+        let commit_label = if !meeting_name_sanitized.is_empty() {
+            meeting_name_sanitized.clone()
+        } else if !context_sanitized.is_empty() {
+            context_sanitized.clone()
+        } else {
+            "general".to_string()
+        };
+        let commit_msg = format!("meeting: {} {}", commit_label, date);
 
         git_commit_notes(working_folder, &notes_rel, &transcript_rel, &commit_msg);
         log::info!("Git commit done: {}", commit_msg);
@@ -215,7 +228,7 @@ pub async fn run(
 
     // Step 8: Create GitHub issues from action items (optional)
     let mut created_issues = Vec::new();
-    if !config.github_repo.is_empty() {
+    if enable_github_issues && !config.github_repo.is_empty() {
         emit_progress(&app, "creating_issues", 0.95);
 
         let action_items = github::parse_action_items(&notes);
@@ -225,10 +238,15 @@ pub async fn run(
         );
 
         if !action_items.is_empty() {
+            let issue_label = if config.meeting_name.is_empty() {
+                &config.context
+            } else {
+                &config.meeting_name
+            };
             created_issues = github::create_issues(
                 &config.github_repo,
                 &action_items,
-                &config.context,
+                issue_label,
                 &date,
                 &output_path.to_string_lossy(),
             );

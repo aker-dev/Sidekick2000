@@ -119,15 +119,20 @@ async fn run_pipeline(
 
     let summarization_provider = s.summarization_provider.clone();
     let together_model = s.together_ai_model.clone();
+    let enable_summary = s.enable_summary;
+    let enable_git_commit = s.enable_git_commit;
+    let enable_github_issues = s.enable_github_issues;
 
-    // Validate that the required key for the selected provider is present
-    if summarization_provider == "together_ai" && together_key.is_empty() {
-        return Err("Together.ai API key not set. Configure it in Settings.".to_string());
-    } else if summarization_provider != "together_ai" && anthropic_key.is_empty() {
-        return Err("ANTHROPIC_API_KEY not set. Configure it in Settings or .env file.".to_string());
+    // Validate that the required key for the selected provider is present (only when summary is enabled)
+    if enable_summary {
+        if summarization_provider == "together_ai" && together_key.is_empty() {
+            return Err("Together.ai API key not set. Configure it in Settings.".to_string());
+        } else if summarization_provider != "together_ai" && anthropic_key.is_empty() {
+            return Err("ANTHROPIC_API_KEY not set. Configure it in Settings or .env file.".to_string());
+        }
     }
 
-    pipeline::run(config, groq_key, anthropic_key, together_key, summarization_provider, together_model, app)
+    pipeline::run(config, groq_key, anthropic_key, together_key, summarization_provider, together_model, enable_summary, enable_git_commit, enable_github_issues, app)
         .await
         .map_err(|e| format!("Pipeline failed: {}", e))
 }

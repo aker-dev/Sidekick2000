@@ -42,6 +42,12 @@ pub struct Settings {
     pub summarization_provider: String,
     #[serde(default = "default_together_ai_model")]
     pub together_ai_model: String,
+    #[serde(default = "default_true")]
+    pub enable_summary: bool,
+    #[serde(default = "default_true")]
+    pub enable_git_commit: bool,
+    #[serde(default = "default_true")]
+    pub enable_github_issues: bool,
 }
 
 impl Default for Settings {
@@ -59,8 +65,15 @@ impl Default for Settings {
             together_ai_api_key: String::new(),
             summarization_provider: default_summarization_provider(),
             together_ai_model: default_together_ai_model(),
+            enable_summary: true,
+            enable_git_commit: true,
+            enable_github_issues: true,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_meetings_subfolder() -> String {

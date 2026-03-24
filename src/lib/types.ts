@@ -23,11 +23,15 @@ export interface Settings {
   together_ai_api_key: string;
   summarization_provider: string;
   together_ai_model: string;
+  enable_summary: boolean;
+  enable_git_commit: boolean;
+  enable_github_issues: boolean;
 }
 
 export interface PipelineConfig {
   context: string;
   context_content: string;
+  meeting_name: string;
   speakers: { name: string; organization: string }[];
   language_code: string;
   language_name: string;
