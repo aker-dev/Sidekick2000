@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use hound::{WavSpec, WavWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -27,6 +27,10 @@ pub fn list_input_devices() -> Vec<String> {
 pub struct AudioRecorder {
     is_recording: Arc<AtomicBool>,
     samples: Arc<Mutex<Vec<f32>>>,
+    /// Smoothed RMS level updated by both the monitor and recording streams.
+    monitor_level: Arc<Mutex<f32>>,
+    /// Holds the monitoring stream alive; set to None to stop it.
+    monitor_stream: Arc<Mutex<Option<StreamHolder>>>,
     sample_rate: Arc<Mutex<u32>>,
     channels: Arc<Mutex<u16>>,
     start_time: Arc<Mutex<Option<Instant>>>,
@@ -37,10 +41,70 @@ impl AudioRecorder {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             samples: Arc::new(Mutex::new(Vec::new())),
+            monitor_level: Arc::new(Mutex::new(0.0)),
+            monitor_stream: Arc::new(Mutex::new(None)),
             sample_rate: Arc::new(Mutex::new(44100)),
             channels: Arc::new(Mutex::new(1)),
             start_time: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Open a lightweight input stream just for level monitoring (no sample accumulation).
+    pub fn start_monitor(&self, device_name: Option<String>) -> Result<()> {
+        // Drop any existing monitor stream first.
+        self.stop_monitor();
+
+        let host = cpal::default_host();
+        let device = if let Some(name) = device_name {
+            host.input_devices()
+                .context("Failed to enumerate input devices")?
+                .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+                .with_context(|| format!("Input device not found: {}", name))?
+        } else {
+            host.default_input_device()
+                .context("No input device available")?
+        };
+
+        log::info!("Starting monitor stream for: {}", device.name().unwrap_or_default());
+
+        let config = device.default_input_config()?;
+        let sample_format = config.sample_format();
+        let config: cpal::StreamConfig = config.into();
+
+        let level_f32 = self.monitor_level.clone();
+        let level_i16 = self.monitor_level.clone();
+
+        let stream = match sample_format {
+            SampleFormat::F32 => device.build_input_stream(
+                &config,
+                move |data: &[f32], _: &_| {
+                    *level_f32.lock().unwrap() = compute_rms(data);
+                },
+                |err| log::error!("Monitor stream error: {}", err),
+                None,
+            )?,
+            SampleFormat::I16 => device.build_input_stream(
+                &config,
+                move |data: &[i16], _: &_| {
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    *level_i16.lock().unwrap() = compute_rms(&floats);
+                },
+                |err| log::error!("Monitor stream error: {}", err),
+                None,
+            )?,
+            format => anyhow::bail!("Unsupported sample format: {:?}", format),
+        };
+
+        stream.play()?;
+        *self.monitor_stream.lock().unwrap() = Some(StreamHolder(stream));
+        Ok(())
+    }
+
+    /// Stop the monitor stream and reset the level.
+    pub fn stop_monitor(&self) {
+        *self.monitor_stream.lock().unwrap() = None;
+        *self.monitor_level.lock().unwrap() = 0.0;
     }
 
     /// Start recording from the specified input device, or the default if `device_name` is None.
@@ -50,6 +114,9 @@ impl AudioRecorder {
         if self.is_recording.load(Ordering::SeqCst) {
             anyhow::bail!("Already recording");
         }
+
+        // Release the monitor stream so the device is free for recording.
+        self.stop_monitor();
 
         // Clear previous samples
         self.samples.lock().unwrap().clear();
@@ -78,10 +145,8 @@ impl AudioRecorder {
         let is_recording = self.is_recording.clone();
         let is_recording2 = self.is_recording.clone();
         let samples = self.samples.clone();
-
-        let err_fn = |err: cpal::StreamError| {
-            log::error!("Stream error: {}", err);
-        };
+        let level_f32 = self.monitor_level.clone();
+        let level_i16 = self.monitor_level.clone();
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
@@ -91,8 +156,9 @@ impl AudioRecorder {
                         return;
                     }
                     samples.lock().unwrap().extend_from_slice(data);
+                    *level_f32.lock().unwrap() = compute_rms(data);
                 },
-                err_fn,
+                |err| log::error!("Stream error: {}", err),
                 None,
             )?,
             SampleFormat::I16 => {
@@ -106,9 +172,10 @@ impl AudioRecorder {
                         }
                         let floats: Vec<f32> =
                             data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                        *level_i16.lock().unwrap() = compute_rms(&floats);
                         samples_i16.lock().unwrap().extend_from_slice(&floats);
                     },
-                    err_fn,
+                    |err| log::error!("Stream error: {}", err),
                     None,
                 )?
             }
@@ -210,14 +277,9 @@ impl AudioRecorder {
             .unwrap_or(0.0)
     }
 
-    /// Get the current RMS level from accumulated samples
+    /// Get the current RMS level (updated by both the monitor and recording streams).
     pub fn current_level(&self) -> f32 {
-        let samples = self.samples.lock().unwrap();
-        if samples.len() < 1600 {
-            return 0.0;
-        }
-        let recent = &samples[samples.len().saturating_sub(4800)..];
-        compute_rms(recent)
+        *self.monitor_level.lock().unwrap()
     }
 }
 
@@ -359,6 +421,134 @@ fn convert_to_ogg(samples: &[f32], sample_rate: u32, ogg_path: &PathBuf) -> Resu
 
     log::info!("OGG/Opus encoding complete: {}", ogg_path.display());
     Ok(())
+}
+
+/// Decode any audio file supported by symphonia into interleaved f32 samples.
+/// Returns (samples, sample_rate, channel_count).
+fn decode_audio_file(path: &Path) -> Result<(Vec<f32>, u32, u16)> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Cannot open file: {}", path.display()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .context("Unsupported or unrecognized audio format")?;
+
+    let mut format = probed.format;
+
+    let track = format
+        .default_track()
+        .context("No audio track found in file")?;
+    let track_id = track.id;
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+    let channels = track
+        .codec_params
+        .channels
+        .map(|c| c.count() as u16)
+        .unwrap_or(1);
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .context("Unsupported audio codec")?;
+
+    let mut all_samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(SymphoniaError::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(SymphoniaError::ResetRequired) => break,
+            Err(e) => anyhow::bail!("Error reading audio packet: {}", e),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        match decoder.decode(&packet) {
+            Ok(decoded) => {
+                let spec = *decoded.spec();
+                let duration = decoded.capacity() as u64;
+                let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
+                sample_buf.copy_interleaved_ref(decoded);
+                all_samples.extend_from_slice(sample_buf.samples());
+            }
+            Err(SymphoniaError::DecodeError(e)) => {
+                log::warn!("Decode error (skipping packet): {}", e);
+                continue;
+            }
+            Err(e) => anyhow::bail!("Fatal decode error: {}", e),
+        }
+    }
+
+    anyhow::ensure!(!all_samples.is_empty(), "No audio data decoded from file");
+
+    Ok((all_samples, sample_rate, channels))
+}
+
+/// Decode any supported audio file, convert to mono 16 kHz, and write
+/// both an OGG/Opus file (for Groq transcription) and a WAV file (for diarization).
+/// Returns (ogg_path, wav_path).
+pub fn prepare_audio_file(input_path: &Path, output_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    log::info!("Preparing audio file: {}", input_path.display());
+
+    let (samples, sample_rate, channels) = decode_audio_file(input_path)?;
+    log::info!(
+        "Decoded {} samples at {} Hz, {} ch",
+        samples.len(),
+        sample_rate,
+        channels
+    );
+
+    // Convert to mono
+    let mono: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels as usize)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    // Resample to 16 kHz (required by both Whisper and diarization)
+    let target_sr = 16_000u32;
+    let resampled = resample(&mono, sample_rate, target_sr);
+
+    std::fs::create_dir_all(output_dir)?;
+
+    let stem = input_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let wav_path = output_dir.join(format!("{}_prepared.wav", stem));
+    let ogg_path = output_dir.join(format!("{}_prepared.ogg", stem));
+
+    save_wav(&resampled, target_sr, &wav_path)?;
+    convert_to_ogg(&resampled, target_sr, &ogg_path)?;
+
+    log::info!(
+        "Prepared audio — OGG: {}, WAV: {}",
+        ogg_path.display(),
+        wav_path.display()
+    );
+    Ok((ogg_path, wav_path))
 }
 
 /// Save samples as a 16-bit PCM WAV file

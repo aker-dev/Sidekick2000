@@ -122,17 +122,67 @@
           />
           <p class="text-xs mt-1 opacity-50">Used for Whisper transcription</p>
         </div>
+
         <div>
-          <label class="block text-sm font-medium mb-1" style="color: var(--text-muted)">Anthropic API Key</label>
-          <input
-            type="password"
-            class="w-full rounded-md px-3 py-2 text-sm border font-mono"
-            style="background: var(--bg); border-color: var(--border); color: var(--text)"
-            placeholder="sk-ant-..."
-            bind:value={settingsState.anthropic_api_key}
-          />
-          <p class="text-xs mt-1 opacity-50">Used for Claude summarization</p>
+          <label class="block text-sm font-medium mb-2" style="color: var(--text-muted)">Summarization Provider</label>
+          <div class="flex gap-3">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="summarization_provider"
+                value="claude"
+                bind:group={settingsState.summarization_provider}
+              />
+              <span class="text-sm">Claude (Anthropic)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="summarization_provider"
+                value="together_ai"
+                bind:group={settingsState.summarization_provider}
+              />
+              <span class="text-sm">Together.ai</span>
+            </label>
+          </div>
         </div>
+
+        {#if settingsState.summarization_provider === "claude"}
+          <div>
+            <label class="block text-sm font-medium mb-1" style="color: var(--text-muted)">Anthropic API Key</label>
+            <input
+              type="password"
+              class="w-full rounded-md px-3 py-2 text-sm border font-mono"
+              style="background: var(--bg); border-color: var(--border); color: var(--text)"
+              placeholder="sk-ant-..."
+              bind:value={settingsState.anthropic_api_key}
+            />
+            <p class="text-xs mt-1 opacity-50">Used for Claude summarization</p>
+          </div>
+        {:else}
+          <div>
+            <label class="block text-sm font-medium mb-1" style="color: var(--text-muted)">Together.ai API Key</label>
+            <input
+              type="password"
+              class="w-full rounded-md px-3 py-2 text-sm border font-mono"
+              style="background: var(--bg); border-color: var(--border); color: var(--text)"
+              placeholder="..."
+              bind:value={settingsState.together_ai_api_key}
+            />
+            <p class="text-xs mt-1 opacity-50">Used for Together.ai summarization</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1" style="color: var(--text-muted)">Together.ai Model</label>
+            <input
+              type="text"
+              class="w-full rounded-md px-3 py-2 text-sm border font-mono"
+              style="background: var(--bg); border-color: var(--border); color: var(--text)"
+              placeholder="meta-llama/Llama-3.3-70B-Instruct-Turbo"
+              bind:value={settingsState.together_ai_model}
+            />
+            <p class="text-xs mt-1 opacity-50">Any chat model available on Together.ai</p>
+          </div>
+        {/if}
       </div>
     {/if}
 

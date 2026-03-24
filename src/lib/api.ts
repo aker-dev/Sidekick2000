@@ -6,6 +6,14 @@ export async function listInputDevices(): Promise<string[]> {
   return await invoke("list_input_devices_cmd");
 }
 
+export async function startMonitoring(deviceName?: string): Promise<void> {
+  await invoke("start_monitoring", { deviceName: deviceName ?? null });
+}
+
+export async function stopMonitoring(): Promise<void> {
+  await invoke("stop_monitoring");
+}
+
 export async function startRecording(deviceName?: string): Promise<void> {
   await invoke("start_recording", { deviceName: deviceName ?? null });
 }
@@ -59,6 +67,10 @@ export function onPipelineProgress(
       callback(event.payload.step, event.payload.progress);
     },
   );
+}
+
+export async function prepareDroppedAudio(path: string): Promise<[string, string]> {
+  return await invoke("prepare_dropped_audio", { path });
 }
 
 export function onAudioLevel(

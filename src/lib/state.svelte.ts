@@ -124,6 +124,10 @@ export const appState = new AppState();
 class SettingsState {
   groq_api_key: string = $state("");
   anthropic_api_key: string = $state("");
+  together_ai_api_key: string = $state("");
+  summarization_provider: string = $state("claude");
+  together_ai_model: string = $state("meta-llama/Llama-3.3-70B-Instruct-Turbo");
+  default_input_device: string = $state("");
   working_folder: string = $state("");
   github_repo: string = $state("");
   meetings_subfolder: string = $state("Meetings");
@@ -140,6 +144,10 @@ class SettingsState {
       const s = await getSettings();
       this.groq_api_key = s.groq_api_key;
       this.anthropic_api_key = s.anthropic_api_key;
+      this.together_ai_api_key = s.together_ai_api_key ?? "";
+      this.summarization_provider = s.summarization_provider ?? "claude";
+      this.together_ai_model = s.together_ai_model ?? "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+      this.default_input_device = s.default_input_device ?? "";
       this.working_folder = s.working_folder;
       this.github_repo = s.github_repo;
       this.meetings_subfolder = s.meetings_subfolder || "Meetings";
@@ -156,12 +164,16 @@ class SettingsState {
     return {
       groq_api_key: this.groq_api_key,
       anthropic_api_key: this.anthropic_api_key,
+      together_ai_api_key: this.together_ai_api_key,
+      summarization_provider: this.summarization_provider,
+      together_ai_model: this.together_ai_model,
       working_folder: this.working_folder,
       github_repo: this.github_repo,
       meetings_subfolder: this.meetings_subfolder,
       default_language: this.default_language,
       default_speakers: this.default_speakers,
       contexts: this.contexts,
+      default_input_device: this.default_input_device,
     };
   }
 

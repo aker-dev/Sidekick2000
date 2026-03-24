@@ -35,6 +35,13 @@ pub struct Settings {
     pub contexts: Vec<Context>,
     #[serde(default)]
     pub default_input_device: String,
+    #[serde(default)]
+    pub together_ai_api_key: String,
+    /// "claude" or "together_ai"
+    #[serde(default = "default_summarization_provider")]
+    pub summarization_provider: String,
+    #[serde(default = "default_together_ai_model")]
+    pub together_ai_model: String,
 }
 
 impl Default for Settings {
@@ -49,6 +56,9 @@ impl Default for Settings {
             default_speakers: Vec::new(),
             contexts: Vec::new(),
             default_input_device: String::new(),
+            together_ai_api_key: String::new(),
+            summarization_provider: default_summarization_provider(),
+            together_ai_model: default_together_ai_model(),
         }
     }
 }
@@ -59,6 +69,14 @@ fn default_meetings_subfolder() -> String {
 
 fn default_language() -> String {
     "fr".to_string()
+}
+
+fn default_summarization_provider() -> String {
+    "claude".to_string()
+}
+
+fn default_together_ai_model() -> String {
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string()
 }
 
 pub fn settings_path() -> PathBuf {

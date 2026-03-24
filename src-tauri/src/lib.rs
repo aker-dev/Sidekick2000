@@ -25,6 +25,25 @@ fn list_input_devices_cmd() -> Vec<String> {
 }
 
 #[tauri::command]
+async fn start_monitoring(
+    state: tauri::State<'_, Mutex<AppState>>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    state
+        .recorder
+        .start_monitor(device_name)
+        .map_err(|e| format!("Failed to start monitor: {}", e))
+}
+
+#[tauri::command]
+fn stop_monitoring(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    state.recorder.stop_monitor();
+    Ok(())
+}
+
+#[tauri::command]
 async fn start_recording(
     state: tauri::State<'_, Mutex<AppState>>,
     _app: tauri::AppHandle,
@@ -89,11 +108,26 @@ async fn run_pipeline(
     let anthropic_key = if !s.anthropic_api_key.is_empty() {
         s.anthropic_api_key.clone()
     } else {
-        std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| "ANTHROPIC_API_KEY not set. Configure it in Settings or .env file.")?
+        std::env::var("ANTHROPIC_API_KEY").unwrap_or_default()
     };
 
-    pipeline::run(config, groq_key, anthropic_key, app)
+    let together_key = if !s.together_ai_api_key.is_empty() {
+        s.together_ai_api_key.clone()
+    } else {
+        std::env::var("TOGETHER_API_KEY").unwrap_or_default()
+    };
+
+    let summarization_provider = s.summarization_provider.clone();
+    let together_model = s.together_ai_model.clone();
+
+    // Validate that the required key for the selected provider is present
+    if summarization_provider == "together_ai" && together_key.is_empty() {
+        return Err("Together.ai API key not set. Configure it in Settings.".to_string());
+    } else if summarization_provider != "together_ai" && anthropic_key.is_empty() {
+        return Err("ANTHROPIC_API_KEY not set. Configure it in Settings or .env file.".to_string());
+    }
+
+    pipeline::run(config, groq_key, anthropic_key, together_key, summarization_provider, together_model, app)
         .await
         .map_err(|e| format!("Pipeline failed: {}", e))
 }
@@ -138,6 +172,35 @@ fn save_input_device(name: String) -> Result<(), String> {
     settings::save(&s).map_err(|e| format!("Failed to save input device: {}", e))
 }
 
+/// Decode a dropped audio file (any format supported by symphonia) and convert
+/// it to OGG/Opus + WAV at 16 kHz mono. Returns (ogg_path, wav_path).
+#[tauri::command]
+async fn prepare_dropped_audio(
+    path: String,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<(String, String), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    let temp_dir = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.temp_dir.clone()
+    };
+    let input = p.to_path_buf();
+    let (ogg_path, wav_path) = tokio::task::spawn_blocking(move || {
+        audio::prepare_audio_file(&input, &temp_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Failed to prepare audio: {}", e))?;
+
+    Ok((
+        ogg_path.to_string_lossy().to_string(),
+        wav_path.to_string_lossy().to_string(),
+    ))
+}
+
 pub fn run() {
     // Load .env file as fallback
     let _ = dotenvy::dotenv();
@@ -156,6 +219,8 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![
             list_input_devices_cmd,
+            start_monitoring,
+            stop_monitoring,
             start_recording,
             stop_recording,
             get_audio_level,
@@ -167,6 +232,7 @@ pub fn run() {
             get_settings,
             save_settings,
             save_input_device,
+            prepare_dropped_audio,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

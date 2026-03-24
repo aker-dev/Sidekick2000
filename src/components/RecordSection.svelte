@@ -1,15 +1,19 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { appState } from "../lib/state.svelte";
   import {
     listInputDevices,
     saveInputDevice,
+    startMonitoring,
+    stopMonitoring,
     startRecording,
     stopRecording,
     getAudioLevel,
     getElapsed,
     runPipeline,
     onPipelineProgress,
+    prepareDroppedAudio,
   } from "../lib/api";
   import type { PipelineConfig } from "../lib/types";
   import AudioMeter from "./AudioMeter.svelte";
@@ -17,6 +21,7 @@
 
   let pollingId: ReturnType<typeof setInterval> | null = null;
   let stopping = $state(false);
+  let isDragOver = $state(false);
 
   onMount(async () => {
     try {
@@ -24,7 +29,60 @@
     } catch {
       // ignore — device list just stays empty
     }
+
+    // Listen for file drops via Tauri (gives us actual file system paths)
+    const webview = getCurrentWebview();
+    const unlisten = await webview.onDragDropEvent(async (event) => {
+      if (event.payload.type === "over") {
+        if (appState.phase === "setup") isDragOver = true;
+      } else if (event.payload.type === "leave" || event.payload.type === "cancelled") {
+        isDragOver = false;
+      } else if (event.payload.type === "drop") {
+        isDragOver = false;
+        if (appState.phase !== "setup") return;
+        const paths = event.payload.paths;
+        if (!paths || paths.length === 0) return;
+        await handleFileDrop(paths[0]);
+      }
+    });
+
+    return unlisten;
   });
+
+  // Drive monitor stream while in setup phase; restart when device changes.
+  $effect(() => {
+    const device = appState.selectedDevice;
+    if (appState.phase !== "setup") return;
+
+    startMonitoring(device || undefined).catch(() => {});
+
+    const pollId = setInterval(async () => {
+      try {
+        appState.audioLevel = await getAudioLevel();
+      } catch {
+        // ignore
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(pollId);
+      stopMonitoring().catch(() => {});
+      appState.audioLevel = 0;
+    };
+  });
+
+  async function handleFileDrop(path: string) {
+    try {
+      const [oggPath, wavPath] = await prepareDroppedAudio(path);
+      appState.oggPath = oggPath;
+      appState.wavPath = wavPath;
+      appState.phase = "processing";
+      await startPipeline();
+    } catch (e: any) {
+      appState.errorMessage = e.toString();
+      appState.phase = "error";
+    }
+  }
 
   async function handleRecord() {
     if (appState.phase === "recording") {
@@ -120,8 +178,8 @@
 </script>
 
 <section
-  class="rounded-lg p-5 border"
-  style="background: var(--surface); border-color: var(--border)"
+  class="rounded-lg p-5 border transition-colors"
+  style="background: var(--surface); border-color: {isDragOver ? 'var(--accent)' : 'var(--border)'}; outline: {isDragOver ? '2px dashed var(--accent)' : 'none'}; outline-offset: -2px;"
 >
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Record</h2>
@@ -182,12 +240,15 @@
 
     {#if stopping}
       <p class="text-sm" style="color: var(--text-muted)">Saving audio…</p>
-    {:else if appState.phase === "recording"}
+    {:else if appState.phase === "setup" || appState.phase === "recording"}
       <AudioMeter level={appState.audioLevel} />
-    {:else if appState.phase === "setup"}
-      <p class="text-sm" style="color: var(--text-muted)">
-        Click to start recording
-      </p>
+      {#if appState.phase === "setup"}
+        {#if isDragOver}
+          <p class="text-xs font-medium" style="color: var(--accent)">Drop audio file to process</p>
+        {:else}
+          <p class="text-xs" style="color: var(--text-muted)">Click to record · drop an audio file to process</p>
+        {/if}
+      {/if}
     {/if}
   </div>
 </section>

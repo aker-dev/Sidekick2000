@@ -20,6 +20,9 @@ export interface Settings {
   default_speakers: { name: string; organization: string }[];
   contexts: Context[];
   default_input_device: string;
+  together_ai_api_key: string;
+  summarization_provider: string;
+  together_ai_model: string;
 }
 
 export interface PipelineConfig {

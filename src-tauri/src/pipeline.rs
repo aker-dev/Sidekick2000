@@ -82,6 +82,9 @@ pub async fn run(
     config: PipelineConfig,
     groq_key: String,
     anthropic_key: String,
+    together_key: String,
+    summarization_provider: String,
+    together_model: String,
     app: AppHandle,
 ) -> Result<PipelineResult> {
     let ogg_path = PathBuf::from(&config.ogg_path);
@@ -136,14 +139,26 @@ pub async fn run(
         .map(|s| (s.name.clone(), s.organization.clone()))
         .collect();
 
-    let notes = summarize::summarize_with_claude(
-        &transcript_md,
-        &config.context_content,
-        &speaker_pairs,
-        &config.language_name,
-        &anthropic_key,
-    )
-    .await?;
+    let notes = if summarization_provider == "together_ai" {
+        summarize::summarize_with_together(
+            &transcript_md,
+            &config.context_content,
+            &speaker_pairs,
+            &config.language_name,
+            &together_key,
+            &together_model,
+        )
+        .await?
+    } else {
+        summarize::summarize_with_claude(
+            &transcript_md,
+            &config.context_content,
+            &speaker_pairs,
+            &config.language_name,
+            &anthropic_key,
+        )
+        .await?
+    };
 
     // Step 6: Export
     emit_progress(&app, "exporting", 0.90);

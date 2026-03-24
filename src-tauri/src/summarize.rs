@@ -79,6 +79,92 @@ fn build_system_prompt(
     prompt
 }
 
+// ── Together.ai structs ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct TogetherRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TogetherResponse {
+    choices: Vec<TogetherChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TogetherChoice {
+    message: TogetherMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct TogetherMessage {
+    content: String,
+}
+
+/// Summarize a transcript using a Together.ai chat model
+pub async fn summarize_with_together(
+    transcript_md: &str,
+    context: &str,
+    speakers: &[(String, String)],
+    language: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<String> {
+    let system_prompt = build_system_prompt(context, speakers, language);
+
+    log::info!("Calling Together.ai ({}) to generate meeting notes", model);
+
+    let request = TogetherRequest {
+        model: model.to_string(),
+        max_tokens: 4096,
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            Message {
+                role: "user".to_string(),
+                content: transcript_md.to_string(),
+            },
+        ],
+    };
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.together.xyz/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("content-type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Failed to send request to Together.ai API")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        anyhow::bail!("Together.ai API error ({}): {}", status, error_text);
+    }
+
+    let api_response: TogetherResponse = response
+        .json()
+        .await
+        .context("Failed to parse Together.ai response")?;
+
+    let notes = api_response
+        .choices
+        .first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_default();
+
+    log::info!("Meeting notes generated successfully (Together.ai)");
+
+    Ok(notes)
+}
+
+// ── Anthropic / Claude ─────────────────────────────────────────────────────
+
 /// Summarize a transcript using Claude Sonnet 4.6
 pub async fn summarize_with_claude(
     transcript_md: &str,
