@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const SYSTEM_PROMPT: &str = r#"You are a professional meeting-notes assistant.
 Given a raw speaker-labelled transcript, produce concise meeting notes in Markdown with the following sections:
@@ -136,7 +137,10 @@ pub async fn summarize_with_together(
         ],
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .context("Failed to build HTTP client")?;
     let response = client
         .post("https://api.together.xyz/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
@@ -192,7 +196,10 @@ pub async fn summarize_with_claude(
         }],
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .context("Failed to build HTTP client")?;
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)

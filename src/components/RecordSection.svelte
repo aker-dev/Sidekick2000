@@ -120,42 +120,50 @@
     appState.pastedImages.push({ dataUrl, timecode, path });
   }
 
+  let isPasting = false;
+
   async function handlePaste(event: ClipboardEvent) {
     if (appState.phase !== "recording") return;
-    const timecode = appState.elapsedSecs;
-
-    // Primary: modern async Clipboard API — more reliable in WKWebView for
-    // images copied from native apps (screenshots, etc.)
+    if (isPasting) return;
+    isPasting = true;
     try {
-      const clipboardItems = await navigator.clipboard.read();
-      for (const clipItem of clipboardItems) {
-        const imageType = clipItem.types.find((t) => t.startsWith("image/"));
-        if (imageType) {
-          event.preventDefault();
-          const blob = await clipItem.getType(imageType);
-          await saveImageBlob(blob, timecode);
-          return;
-        }
-      }
-    } catch {
-      // Clipboard API unavailable or no permission — fall through to legacy path
-    }
+      const timecode = appState.elapsedSecs;
 
-    // Fallback: event.clipboardData.items (works for paste from web content)
-    const items = event.clipboardData?.items;
-    if (!items) return;
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith("image/")) {
-        event.preventDefault();
-        const file = item.getAsFile();
-        if (!file) continue;
-        try {
-          await saveImageBlob(file, timecode);
-        } catch (e) {
-          console.error("Failed to save pasted image:", e);
+      // Primary: modern async Clipboard API — more reliable in WKWebView for
+      // images copied from native apps (screenshots, etc.)
+      try {
+        const clipboardItems = await navigator.clipboard.read();
+        for (const clipItem of clipboardItems) {
+          const imageType = clipItem.types.find((t) => t.startsWith("image/"));
+          if (imageType) {
+            event.preventDefault();
+            const blob = await clipItem.getType(imageType);
+            await saveImageBlob(blob, timecode);
+            return;
+          }
         }
-        break;
+      } catch {
+        // Clipboard API unavailable or no permission — fall through to legacy path
       }
+
+      // Fallback: event.clipboardData.items (works for paste from web content)
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          event.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          try {
+            await saveImageBlob(file, timecode);
+          } catch (e) {
+            console.error("Failed to save pasted image:", e);
+          }
+          break;
+        }
+      }
+    } finally {
+      isPasting = false;
     }
   }
 
