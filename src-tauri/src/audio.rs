@@ -368,6 +368,7 @@ impl AudioRecorder {
     /// The drained samples are also appended to `all_samples` so that `stop()`
     /// can still produce the full WAV.
     /// Returns (drained_samples, native_sample_rate, native_channels).
+    #[allow(dead_code)]
     pub fn drain_samples(&self) -> (Vec<f32>, u32, u16) {
         let mut buf = self.samples.lock().unwrap();
         let drained: Vec<f32> = buf.drain(..).collect();
@@ -382,11 +383,13 @@ impl AudioRecorder {
     }
 
     /// Returns the native sample rate of the current recording.
+    #[allow(dead_code)]
     pub fn native_sample_rate(&self) -> u32 {
         *self.sample_rate.lock().unwrap()
     }
 
     /// Returns the number of native channels.
+    #[allow(dead_code)]
     pub fn native_channels(&self) -> u16 {
         *self.channels.lock().unwrap()
     }
@@ -409,6 +412,7 @@ impl AudioRecorder {
         self.channels.clone()
     }
 
+    #[allow(dead_code)]
     pub fn is_recording_ref(&self) -> Arc<AtomicBool> {
         self.is_recording.clone()
     }
