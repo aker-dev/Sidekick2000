@@ -2,8 +2,10 @@ use crate::export;
 use crate::export::ImageAnnotation;
 use crate::github;
 use crate::merge;
+use crate::settings::TranscriptionMode;
 use crate::summarize;
 use crate::transcribe;
+use crate::whisper_local;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -91,9 +93,96 @@ fn git_commit_notes(working_folder: &str, paths: &[&str], message: &str) {
     }
 }
 
-/// Run the full processing pipeline
+/// Transcribe both streams using Groq (cloud).
+async fn transcribe_with_groq(
+    config: &PipelineConfig,
+    groq_key: &str,
+    language: &Option<String>,
+) -> Result<(
+    transcribe::TranscriptResult,
+    Option<transcribe::TranscriptResult>,
+)> {
+    let local_ogg = PathBuf::from(&config.local_ogg_path);
+    let groq_key_local = groq_key.to_string();
+    let lang_local = language.clone();
+    let local_handle = tokio::spawn(async move {
+        transcribe::transcribe_with_groq(&local_ogg, lang_local.as_deref(), &groq_key_local).await
+    });
+
+    let remote_handle = if !config.remote_ogg_path.is_empty() {
+        let remote_ogg = PathBuf::from(&config.remote_ogg_path);
+        let groq_key_remote = groq_key.to_string();
+        let lang_remote = language.clone();
+        Some(tokio::spawn(async move {
+            transcribe::transcribe_with_groq(&remote_ogg, lang_remote.as_deref(), &groq_key_remote)
+                .await
+        }))
+    } else {
+        None
+    };
+
+    let local_transcript = local_handle.await??;
+    let remote_transcript = if let Some(handle) = remote_handle {
+        Some(handle.await??)
+    } else {
+        None
+    };
+
+    Ok((local_transcript, remote_transcript))
+}
+
+/// Transcribe both streams using local Whisper (whisper.cpp + Metal).
+async fn transcribe_with_local_whisper(
+    config: &PipelineConfig,
+    language: &Option<String>,
+    app: &AppHandle,
+) -> Result<(
+    transcribe::TranscriptResult,
+    Option<transcribe::TranscriptResult>,
+)> {
+    // Ensure model is downloaded
+    let model_path = whisper_local::ensure_model_downloaded(Some(app)).await?;
+
+    let local_ogg = config.local_ogg_path.clone();
+    let remote_ogg = config.remote_ogg_path.clone();
+    let lang = language.clone();
+
+    // Whisper transcription is CPU/GPU-bound, run on blocking thread
+    let result = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut engine = whisper_local::WhisperEngine::new(&model_path)?;
+
+        let local_wav = PathBuf::from(&local_ogg).with_extension("wav");
+        let local_transcript =
+            whisper_local::transcribe_wav_file(&mut engine, &local_wav, lang.as_deref())?;
+
+        let remote_transcript = if !remote_ogg.is_empty() {
+            let remote_wav = PathBuf::from(&remote_ogg).with_extension("wav");
+            Some(whisper_local::transcribe_wav_file(
+                &mut engine,
+                &remote_wav,
+                lang.as_deref(),
+            )?)
+        } else {
+            None
+        };
+
+        Ok((local_transcript, remote_transcript))
+    })
+    .await??;
+
+    Ok(result)
+}
+
+/// Run the full processing pipeline.
+///
+/// If `live_local_segments` / `live_remote_segments` are provided (from live
+/// transcription during recording), transcription is skipped entirely and these
+/// pre-computed segments are used for merging.
 pub async fn run(
     config: PipelineConfig,
+    transcription_mode: TranscriptionMode,
+    live_local_segments: Option<Vec<transcribe::TranscriptSegment>>,
+    live_remote_segments: Option<Vec<transcribe::TranscriptSegment>>,
     groq_key: String,
     anthropic_key: String,
     together_key: String,
@@ -104,46 +193,50 @@ pub async fn run(
     enable_github_issues: bool,
     app: AppHandle,
 ) -> Result<PipelineResult> {
-    let local_ogg = PathBuf::from(&config.local_ogg_path);
-
-    // Step 1: Transcribe both streams in parallel
+    // Step 1: Transcribe (or reuse pre-computed live segments)
     emit_progress(&app, "transcribing", 0.0);
-    let language: Option<String> = if config.language_code.is_empty() {
-        None
+
+    let (local_transcript, remote_transcript) = if let Some(local_segs) = live_local_segments {
+        // Live transcription was active — reuse pre-computed segments
+        log::info!(
+            "Using pre-computed live segments: {} local, {} remote",
+            local_segs.len(),
+            live_remote_segments.as_ref().map_or(0, |s| s.len())
+        );
+
+        let local_text = local_segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+        let local_result = transcribe::TranscriptResult {
+            text: local_text,
+            segments: local_segs,
+        };
+
+        let remote_result = live_remote_segments.map(|segs| {
+            let text = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+            transcribe::TranscriptResult {
+                text,
+                segments: segs,
+            }
+        });
+
+        (local_result, remote_result)
     } else {
-        Some(config.language_code.clone())
+        // No live segments — transcribe from audio files
+        let language: Option<String> = if config.language_code.is_empty() {
+            None
+        } else {
+            Some(config.language_code.clone())
+        };
+
+        match transcription_mode {
+            TranscriptionMode::Groq => {
+                transcribe_with_groq(&config, &groq_key, &language).await?
+            }
+            TranscriptionMode::LocalWhisper => {
+                transcribe_with_local_whisper(&config, &language, &app).await?
+            }
+        }
     };
 
-    let groq_key_local = groq_key.clone();
-    let lang_local = language.clone();
-    let local_handle = tokio::spawn(async move {
-        transcribe::transcribe_with_groq(&local_ogg, lang_local.as_deref(), &groq_key_local).await
-    });
-
-    let remote_handle = if !config.remote_ogg_path.is_empty() {
-        let remote_ogg = PathBuf::from(&config.remote_ogg_path);
-        let groq_key_remote = groq_key.clone();
-        let lang_remote = language.clone();
-        Some(tokio::spawn(async move {
-            transcribe::transcribe_with_groq(
-                &remote_ogg,
-                lang_remote.as_deref(),
-                &groq_key_remote,
-            )
-            .await
-        }))
-    } else {
-        None
-    };
-
-    let local_transcript = local_handle.await??;
-    emit_progress(&app, "transcribing", 0.4);
-
-    let remote_transcript = if let Some(handle) = remote_handle {
-        Some(handle.await??)
-    } else {
-        None
-    };
     emit_progress(&app, "merging", 0.5);
 
     // Step 2: Merge — speakers are already known, no diarization needed

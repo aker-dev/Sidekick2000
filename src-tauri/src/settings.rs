@@ -2,6 +2,18 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TranscriptionMode {
+    Groq,
+    LocalWhisper,
+}
+
+impl Default for TranscriptionMode {
+    fn default() -> Self {
+        Self::LocalWhisper
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
     pub id: String,
@@ -52,6 +64,9 @@ pub struct Settings {
     pub summarization_provider: String,
     #[serde(default = "default_together_ai_model")]
     pub together_ai_model: String,
+    /// Transcription engine: LocalWhisper (default, offline) or Groq (cloud).
+    #[serde(default)]
+    pub transcription_mode: TranscriptionMode,
     #[serde(default = "default_true")]
     pub enable_summary: bool,
     #[serde(default = "default_true")]
@@ -78,6 +93,7 @@ impl Default for Settings {
             together_ai_api_key: String::new(),
             summarization_provider: default_summarization_provider(),
             together_ai_model: default_together_ai_model(),
+            transcription_mode: TranscriptionMode::default(),
             enable_summary: true,
             enable_git_commit: true,
             enable_github_issues: true,

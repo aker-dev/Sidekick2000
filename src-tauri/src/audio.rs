@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use hound::{WavSpec, WavWriter};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,34 +20,94 @@ pub fn list_input_devices() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Categorized audio device lists.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CategorizedDevices {
+    /// Normal microphone devices (everything except BlackHole).
+    pub microphones: Vec<String>,
+    /// Loopback / virtual cable devices (names containing "BlackHole").
+    pub loopback: Vec<String>,
+}
+
+/// Returns input devices split into microphones and loopback (BlackHole) categories.
+pub fn list_audio_devices_categorized() -> CategorizedDevices {
+    let all = list_input_devices();
+    let mut microphones = Vec::new();
+    let mut loopback = Vec::new();
+
+    for name in all {
+        if name.contains("BlackHole") {
+            loopback.push(name);
+        } else {
+            microphones.push(name);
+        }
+    }
+
+    CategorizedDevices {
+        microphones,
+        loopback,
+    }
+}
+
 /// Manages audio recording from the default input device.
 ///
 /// Because `cpal::Stream` is not `Send` on macOS, we store the stream
 /// behind an `Arc<Mutex<Option<...>>>` and keep it on the creating thread.
 /// The stream's data callback pushes samples into a shared buffer.
+///
+/// The ring buffer (`VecDeque`) accumulates all recorded samples. For batch
+/// mode they are consumed at stop time; for live mode a consumer thread can
+/// call `drain_samples()` periodically.
 pub struct AudioRecorder {
     is_recording: Arc<AtomicBool>,
-    samples: Arc<Mutex<Vec<f32>>>,
+    /// Ring buffer of raw interleaved samples at native sample rate.
+    samples: Arc<Mutex<VecDeque<f32>>>,
+    /// Accumulated samples that have already been drained by a live consumer.
+    /// Only used during stop to produce the full WAV.
+    all_samples: Arc<Mutex<Vec<f32>>>,
     /// Smoothed RMS level updated by both the monitor and recording streams.
     monitor_level: Arc<Mutex<f32>>,
     /// Holds the monitoring stream alive; set to None to stop it.
     monitor_stream: Arc<Mutex<Option<StreamHolder>>>,
     sample_rate: Arc<Mutex<u32>>,
     channels: Arc<Mutex<u16>>,
+    /// Shared start time — can be injected externally so both recorders share
+    /// a single t=0 origin.
     start_time: Arc<Mutex<Option<Instant>>>,
+    /// Total number of mono samples pushed (at native rate), used to compute
+    /// the current time offset for live transcription.
+    total_samples_pushed: Arc<Mutex<u64>>,
 }
+
+/// Capacity of the ring buffer: 60 seconds at 48 kHz stereo (worst case).
+const RING_BUFFER_CAPACITY: usize = 48_000 * 2 * 60;
 
 impl AudioRecorder {
     pub fn new() -> Self {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
-            samples: Arc::new(Mutex::new(Vec::new())),
+            samples: Arc::new(Mutex::new(VecDeque::with_capacity(RING_BUFFER_CAPACITY))),
+            all_samples: Arc::new(Mutex::new(Vec::new())),
             monitor_level: Arc::new(Mutex::new(0.0)),
             monitor_stream: Arc::new(Mutex::new(None)),
             sample_rate: Arc::new(Mutex::new(44100)),
             channels: Arc::new(Mutex::new(1)),
             start_time: Arc::new(Mutex::new(None)),
+            total_samples_pushed: Arc::new(Mutex::new(0)),
         }
+    }
+
+    /// Create a recorder that shares the given start_time with another recorder.
+    pub fn new_with_shared_start_time(start_time: Arc<Mutex<Option<Instant>>>) -> Self {
+        Self {
+            start_time,
+            ..Self::new()
+        }
+    }
+
+    /// Get a clone of the shared start_time Arc for sharing with another recorder.
+    pub fn shared_start_time(&self) -> Arc<Mutex<Option<Instant>>> {
+        self.start_time.clone()
     }
 
     /// Open a lightweight input stream just for level monitoring (no sample accumulation).
@@ -120,6 +181,8 @@ impl AudioRecorder {
 
         // Clear previous samples
         self.samples.lock().unwrap().clear();
+        self.all_samples.lock().unwrap().clear();
+        *self.total_samples_pushed.lock().unwrap() = 0;
 
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
@@ -140,11 +203,19 @@ impl AudioRecorder {
 
         *self.sample_rate.lock().unwrap() = config.sample_rate.0;
         *self.channels.lock().unwrap() = config.channels;
-        *self.start_time.lock().unwrap() = Some(Instant::now());
+
+        // Set start_time only if not already set (shared start_time case)
+        {
+            let mut st = self.start_time.lock().unwrap();
+            if st.is_none() {
+                *st = Some(Instant::now());
+            }
+        }
 
         let is_recording = self.is_recording.clone();
         let is_recording2 = self.is_recording.clone();
         let samples = self.samples.clone();
+        let total_pushed = self.total_samples_pushed.clone();
         let level_f32 = self.monitor_level.clone();
         let level_i16 = self.monitor_level.clone();
 
@@ -155,7 +226,9 @@ impl AudioRecorder {
                     if !is_recording.load(Ordering::SeqCst) {
                         return;
                     }
-                    samples.lock().unwrap().extend_from_slice(data);
+                    let mut buf = samples.lock().unwrap();
+                    buf.extend(data.iter());
+                    *total_pushed.lock().unwrap() += data.len() as u64;
                     *level_f32.lock().unwrap() = compute_rms(data);
                 },
                 |err| log::error!("Stream error: {}", err),
@@ -164,6 +237,7 @@ impl AudioRecorder {
             SampleFormat::I16 => {
                 let is_recording_i16 = self.is_recording.clone();
                 let samples_i16 = self.samples.clone();
+                let total_pushed_i16 = self.total_samples_pushed.clone();
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &_| {
@@ -173,7 +247,9 @@ impl AudioRecorder {
                         let floats: Vec<f32> =
                             data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                         *level_i16.lock().unwrap() = compute_rms(&floats);
-                        samples_i16.lock().unwrap().extend_from_slice(&floats);
+                        let mut buf = samples_i16.lock().unwrap();
+                        buf.extend(floats.iter());
+                        *total_pushed_i16.lock().unwrap() += floats.len() as u64;
                     },
                     |err| log::error!("Stream error: {}", err),
                     None,
@@ -210,18 +286,25 @@ impl AudioRecorder {
         // Give the stream thread time to notice and drop
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let samples = self.samples.lock().unwrap().clone();
+        // Collect all samples: previously drained + still in ring buffer
+        let mut all = self.all_samples.lock().unwrap().clone();
+        let remaining: Vec<f32> = self.samples.lock().unwrap().drain(..).collect();
+        all.extend_from_slice(&remaining);
+
         let native_sr = *self.sample_rate.lock().unwrap();
         let channels = *self.channels.lock().unwrap();
 
-        if samples.is_empty() {
+        if all.is_empty() {
             anyhow::bail!("No audio recorded");
         }
 
         log::info!(
             "[{}] Recorded {} samples at {}Hz, {} channels",
-            prefix, samples.len(), native_sr, channels
+            prefix, all.len(), native_sr, channels
         );
+
+        // Alias for the rest of the method
+        let samples = all;
 
         // Convert to mono if multi-channel
         let mono_samples = if channels > 1 {
@@ -277,6 +360,57 @@ impl AudioRecorder {
     /// Returns true if any audio samples have been accumulated (i.e. recording was started).
     pub fn has_samples(&self) -> bool {
         !self.samples.lock().unwrap().is_empty()
+            || !self.all_samples.lock().unwrap().is_empty()
+            || *self.total_samples_pushed.lock().unwrap() > 0
+    }
+
+    /// Drain all samples currently in the ring buffer.
+    /// The drained samples are also appended to `all_samples` so that `stop()`
+    /// can still produce the full WAV.
+    /// Returns (drained_samples, native_sample_rate, native_channels).
+    pub fn drain_samples(&self) -> (Vec<f32>, u32, u16) {
+        let mut buf = self.samples.lock().unwrap();
+        let drained: Vec<f32> = buf.drain(..).collect();
+        drop(buf);
+
+        // Keep a copy for the final WAV
+        self.all_samples.lock().unwrap().extend_from_slice(&drained);
+
+        let sr = *self.sample_rate.lock().unwrap();
+        let ch = *self.channels.lock().unwrap();
+        (drained, sr, ch)
+    }
+
+    /// Returns the native sample rate of the current recording.
+    pub fn native_sample_rate(&self) -> u32 {
+        *self.sample_rate.lock().unwrap()
+    }
+
+    /// Returns the number of native channels.
+    pub fn native_channels(&self) -> u16 {
+        *self.channels.lock().unwrap()
+    }
+
+    // --- Arc ref accessors for live transcription worker threads ---
+
+    pub fn samples_ref(&self) -> Arc<Mutex<VecDeque<f32>>> {
+        self.samples.clone()
+    }
+
+    pub fn all_samples_ref(&self) -> Arc<Mutex<Vec<f32>>> {
+        self.all_samples.clone()
+    }
+
+    pub fn sample_rate_ref(&self) -> Arc<Mutex<u32>> {
+        self.sample_rate.clone()
+    }
+
+    pub fn channels_ref(&self) -> Arc<Mutex<u16>> {
+        self.channels.clone()
+    }
+
+    pub fn is_recording_ref(&self) -> Arc<AtomicBool> {
+        self.is_recording.clone()
     }
 }
 
