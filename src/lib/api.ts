@@ -105,3 +105,15 @@ export function onAudioLevel(
     },
   );
 }
+
+/** Listen for live transcript segments emitted during recording. */
+export function onLiveSegment(
+  callback: (speaker: string, segments: { text: string; start: number; end: number }[]) => void,
+) {
+  return listen<{ speaker: string; segments: { text: string; start: number; end: number }[] }>(
+    "live-segment",
+    (event) => {
+      callback(event.payload.speaker, event.payload.segments);
+    },
+  );
+}

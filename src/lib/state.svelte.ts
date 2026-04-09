@@ -1,4 +1,4 @@
-import type { Speaker, AppPhase, PipelineStep, CreatedIssue, Context, Settings, ImageAnnotation } from "./types";
+import type { Speaker, AppPhase, PipelineStep, CreatedIssue, Context, Settings, ImageAnnotation, LiveSegment } from "./types";
 import { getSettings, saveSettings, getDefaultOutputDir } from "./api";
 
 export const LANGUAGES = [
@@ -60,6 +60,9 @@ class AppState {
 
   // Images pasted during recording
   pastedImages: { dataUrl: string; timecode: number; path: string }[] = $state([]);
+
+  // Live transcript segments received during recording
+  liveSegments: LiveSegment[] = $state([]);
 
   get enabledSpeakers(): Speaker[] {
     return this.speakers.filter((s) => s.enabled);
@@ -130,6 +133,7 @@ class AppState {
     this.localOggPath = "";
     this.remoteOggPath = "";
     this.pastedImages = [];
+    this.liveSegments = [];
   }
 }
 

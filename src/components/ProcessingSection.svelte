@@ -1,13 +1,19 @@
 <script lang="ts">
   import { appState } from "../lib/state.svelte";
 
-  const baseSteps = [
-    { key: "transcribing", label: "Transcribing" },
+  // Choose the transcription step label based on whether live segments were reused
+  const isLiveReuse = $derived(
+    appState.pipelineStep === "reusing_live" ||
+    (appState.pipelineStep !== "transcribing" && appState.liveSegments.length > 0)
+  );
+
+  const baseSteps = $derived([
+    { key: isLiveReuse ? "reusing_live" : "transcribing", label: isLiveReuse ? "Using live transcript" : "Transcribing" },
     { key: "diarizing", label: "Identifying Speakers" },
     { key: "merging", label: "Merging" },
     { key: "summarizing", label: "Summarizing" },
     { key: "exporting", label: "Exporting" },
-  ];
+  ]);
 
   let steps = $derived.by(() => {
     const s = [...baseSteps];

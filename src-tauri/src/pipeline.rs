@@ -59,6 +59,24 @@ pub struct PipelineProgress {
     pub progress: f64,
 }
 
+/// Phrases that indicate broadcast watermarks rather than real speech.
+const JUNK_PHRASES: &[&str] = &["Sous-titrage Société Radio-Canada"];
+
+/// Remove transcript segments whose text matches a known junk phrase.
+fn filter_junk_segments(result: &mut transcribe::TranscriptResult) {
+    result.segments.retain(|seg| {
+        let trimmed = seg.text.trim();
+        !JUNK_PHRASES.iter().any(|p| trimmed == *p)
+    });
+    // Rebuild the full text from remaining segments
+    result.text = result
+        .segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+}
+
 fn emit_progress(app: &AppHandle, step: &str, progress: f64) {
     let _ = app.emit(
         "pipeline-progress",
@@ -194,10 +212,9 @@ pub async fn run(
     app: AppHandle,
 ) -> Result<PipelineResult> {
     // Step 1: Transcribe (or reuse pre-computed live segments)
-    emit_progress(&app, "transcribing", 0.0);
-
     let (local_transcript, remote_transcript) = if let Some(local_segs) = live_local_segments {
         // Live transcription was active — reuse pre-computed segments
+        emit_progress(&app, "reusing_live", 0.5);
         log::info!(
             "Using pre-computed live segments: {} local, {} remote",
             local_segs.len(),
@@ -221,6 +238,7 @@ pub async fn run(
         (local_result, remote_result)
     } else {
         // No live segments — transcribe from audio files
+        emit_progress(&app, "transcribing", 0.0);
         let language: Option<String> = if config.language_code.is_empty() {
             None
         } else {
@@ -236,6 +254,13 @@ pub async fn run(
             }
         }
     };
+
+    // Filter out broadcast watermark segments
+    let (mut local_transcript, mut remote_transcript) = (local_transcript, remote_transcript);
+    filter_junk_segments(&mut local_transcript);
+    if let Some(ref mut remote) = remote_transcript {
+        filter_junk_segments(remote);
+    }
 
     emit_progress(&app, "merging", 0.5);
 

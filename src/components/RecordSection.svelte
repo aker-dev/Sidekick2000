@@ -14,6 +14,7 @@
     onPipelineProgress,
     prepareDroppedAudio,
     savePastedImage,
+    onLiveSegment,
   } from "../lib/api";
   import type { PipelineConfig } from "../lib/types";
   import AudioMeter from "./AudioMeter.svelte";
@@ -22,6 +23,40 @@
   let stopping = $state(false);
   let isDragOver = $state(false);
   let preparingFile = $state("");
+  let liveTranscriptEl: HTMLDivElement | undefined = $state();
+
+  // Listen for live-segment events from Tauri backend.
+  // Set up once on mount; the callback checks phase reactively.
+  onMount(() => {
+    let mounted = true;
+    let unlisten: (() => void) | undefined;
+
+    onLiveSegment((speaker, segments) => {
+      if (appState.phase !== "recording") return;
+      for (const seg of segments) {
+        appState.liveSegments.push({
+          speaker,
+          text: seg.text,
+          start: seg.start,
+          end: seg.end,
+        });
+      }
+      // Auto-scroll to bottom
+      requestAnimationFrame(() => {
+        if (liveTranscriptEl) {
+          liveTranscriptEl.scrollTop = liveTranscriptEl.scrollHeight;
+        }
+      });
+    }).then((fn) => {
+      if (mounted) unlisten = fn;
+      else fn(); // already unmounted, clean up immediately
+    });
+
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  });
 
   onMount(async () => {
     try {
@@ -369,6 +404,29 @@
       </div>
 
       {#if appState.phase === "recording"}
+        <!-- Live transcript -->
+        {#if appState.liveSegments.length > 0}
+          <div
+            bind:this={liveTranscriptEl}
+            class="w-full rounded border overflow-y-auto text-xs space-y-1 p-2"
+            style="background: var(--surface-alt, var(--surface)); border-color: var(--border); max-height: 160px;"
+          >
+            {#each appState.liveSegments as seg}
+              <div class="flex gap-2">
+                <span
+                  class="font-medium shrink-0"
+                  style="color: {seg.speaker === 'local' ? 'var(--accent)' : 'var(--success)'}; min-width: 3rem;"
+                >
+                  {seg.speaker === "local" ? appState.localSpeakerName : appState.remoteSpeakerName}
+                </span>
+                <span style="color: var(--text)">{seg.text.trim()}</span>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="text-xs" style="color: var(--text-muted)">Live transcript will appear here…</p>
+        {/if}
+
         <!-- Screenshot thumbnails -->
         {#if appState.pastedImages.length > 0}
           <div class="w-full flex flex-wrap gap-2 mt-1">

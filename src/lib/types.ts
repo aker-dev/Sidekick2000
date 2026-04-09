@@ -68,6 +68,7 @@ export type AppPhase = "setup" | "recording" | "processing" | "result" | "error"
 
 export type PipelineStep =
   | "transcribing"
+  | "reusing_live"
   | "diarizing"
   | "merging"
   | "summarizing"
@@ -75,3 +76,10 @@ export type PipelineStep =
   | "committing"
   | "creating_issues"
   | "done";
+
+export interface LiveSegment {
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+}
