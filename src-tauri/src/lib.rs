@@ -79,6 +79,7 @@ async fn start_recording(
     state: tauri::State<'_, Mutex<AppState>>,
     local_device: Option<String>,
     remote_device: Option<String>,
+    language: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let s = settings::load();
@@ -118,11 +119,16 @@ async fn start_recording(
                 model_path.display()
             );
         } else {
-            let language = if s.default_language.is_empty() {
-                None
-            } else {
-                Some(s.default_language.clone())
-            };
+            // Prefer the language passed from the UI; fall back to saved settings.
+            let language = language
+                .filter(|l| !l.is_empty())
+                .or_else(|| {
+                    if s.default_language.is_empty() {
+                        None
+                    } else {
+                        Some(s.default_language.clone())
+                    }
+                });
 
             match live_transcribe::LiveDualState::start(
                 &state.local_recorder,

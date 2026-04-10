@@ -241,6 +241,7 @@
         await startRecording(
           appState.selectedDevice || undefined,
           appState.remoteDevice || undefined,
+          appState.language || undefined,
         );
         appState.phase = "recording";
         appState.elapsedSecs = 0;

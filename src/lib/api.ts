@@ -17,10 +17,11 @@ export async function stopMonitoring(): Promise<void> {
   await invoke("stop_monitoring");
 }
 
-export async function startRecording(localDevice?: string, remoteDevice?: string): Promise<void> {
+export async function startRecording(localDevice?: string, remoteDevice?: string, language?: string): Promise<void> {
   await invoke("start_recording", {
     localDevice: localDevice ?? null,
     remoteDevice: remoteDevice ?? null,
+    language: language ?? null,
   });
 }
 
