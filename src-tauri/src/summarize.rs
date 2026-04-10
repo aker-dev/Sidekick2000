@@ -102,11 +102,35 @@ struct TogetherResponse {
 #[derive(Debug, Deserialize)]
 struct TogetherChoice {
     message: TogetherMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TogetherMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    /// Some reasoning models (GLM, DeepSeek-R1, QwQ, …) return the chain of
+    /// thought in a separate field and leave `content` empty or truncated.
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+/// Strip a leading `<think>…</think>` block emitted by reasoning models.
+/// If the block is unclosed (response got truncated mid-reasoning), returns
+/// an empty string so the caller can detect the failure.
+fn strip_think_block(raw: &str) -> String {
+    let trimmed = raw.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("<think>") {
+        if let Some(end) = rest.find("</think>") {
+            return rest[end + "</think>".len()..].trim().to_string();
+        }
+        // Unclosed think block → truncation
+        return String::new();
+    }
+    raw.trim().to_string()
 }
 
 /// Summarize a transcript using a Together.ai chat model
@@ -122,9 +146,15 @@ pub async fn summarize_with_together(
 
     log::info!("Calling Together.ai ({}) to generate meeting notes", model);
 
+    // Reasoning models (GLM-*, DeepSeek-R1, QwQ, …) spend thousands of tokens
+    // thinking before the answer. 4096 caps out mid-<think> and returns empty
+    // content. Give them room; Together caps responses server-side anyway.
+    let is_reasoning_model = model_is_reasoning(model);
+    let max_tokens = if is_reasoning_model { 16384 } else { 4096 };
+
     let request = TogetherRequest {
         model: model.to_string(),
-        max_tokens: 4096,
+        max_tokens,
         messages: vec![
             Message {
                 role: "system".to_string(),
@@ -156,20 +186,86 @@ pub async fn summarize_with_together(
         anyhow::bail!("Together.ai API error ({}): {}", status, error_text);
     }
 
-    let api_response: TogetherResponse = response
-        .json()
+    // Read as raw text first so we can log the body on parse failure — the
+    // Together API sometimes returns usage/finish_reason info that helps
+    // diagnose empty summaries with reasoning models.
+    let body = response
+        .text()
         .await
-        .context("Failed to parse Together.ai response")?;
+        .context("Failed to read Together.ai response body")?;
 
-    let notes = api_response
+    let api_response: TogetherResponse = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "Failed to parse Together.ai response. Raw body: {}",
+            truncate_for_log(&body, 2000)
+        )
+    })?;
+
+    let choice = api_response
         .choices
         .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default();
+        .context("Together.ai returned no choices")?;
 
-    log::info!("Meeting notes generated successfully (Together.ai)");
+    let finish = choice.finish_reason.as_deref().unwrap_or("unknown");
+    let raw_content = choice.message.content.as_deref().unwrap_or("");
+    let cleaned = strip_think_block(raw_content);
+
+    // Fallback ladder for reasoning models: stripped content → reasoning_content → reasoning
+    let notes = if !cleaned.is_empty() {
+        cleaned
+    } else if let Some(rc) = choice.message.reasoning_content.as_deref() {
+        strip_think_block(rc)
+    } else if let Some(r) = choice.message.reasoning.as_deref() {
+        strip_think_block(r)
+    } else {
+        String::new()
+    };
+
+    if notes.trim().is_empty() {
+        log::error!(
+            "Together.ai returned empty notes (finish_reason={}, model={}, raw content len={}). \
+             Likely the response was truncated inside a <think> block — try a non-reasoning model \
+             or a higher max_tokens.",
+            finish,
+            model,
+            raw_content.len()
+        );
+        log::debug!("Together.ai raw body: {}", truncate_for_log(&body, 2000));
+        anyhow::bail!(
+            "Together.ai returned an empty summary (finish_reason={}). \
+             The model {} is likely a reasoning model whose response was truncated. \
+             Try a non-reasoning model (e.g. meta-llama/Llama-3.3-70B-Instruct-Turbo).",
+            finish,
+            model
+        );
+    }
+
+    log::info!(
+        "Meeting notes generated successfully (Together.ai, finish_reason={})",
+        finish
+    );
 
     Ok(notes)
+}
+
+fn model_is_reasoning(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("glm-4.5")
+        || m.contains("glm-4.6")
+        || m.contains("glm-5")
+        || m.contains("deepseek-r1")
+        || m.contains("qwq")
+        || m.contains("qwen3")
+        || m.contains("-thinking")
+        || m.contains("-reasoning")
+}
+
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}… ({} more bytes)", &s[..max], s.len() - max)
+    }
 }
 
 // ── Anthropic / Claude ─────────────────────────────────────────────────────
