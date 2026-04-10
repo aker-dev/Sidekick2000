@@ -1,7 +1,10 @@
 [package]
 name = "sidekick2000"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+license = "MIT"
+description = "Record, transcribe, and summarize meetings locally on macOS."
+repository = "https://github.com/aker-dev/Sidekick2000"
 
 [lib]
 name = "sidekick2000_lib"

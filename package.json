@@ -1,13 +1,20 @@
 {
   "name": "sidekick2000",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "license": "MIT",
+  "description": "Record, transcribe, and summarize meetings locally on macOS.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aker-dev/Sidekick2000.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
