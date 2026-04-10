@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Sidekick2000 records meeting audio locally to transcribe and summarize it. Audio is processed on-device unless you enable cloud transcription in Settings.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Sidekick2000 uses AppleScript only if you enable git commit or GitHub issue creation, to invoke the gh and git CLIs in your working folder.</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+</dict>
+</plist>
